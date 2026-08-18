@@ -1,0 +1,591 @@
+%% star subnetwork-based ring neural network fig8 a(1)-c(1)
+%  a(1)-c(1)  g_cr = -0.15; g_rr = 0; g_hc = 0;g_cc_values = [0.6,0.6,0.6,0.6,0.6,0.6,0.6,0.6,0.6,0.6];
+clear; clc; 
+rng(150, 'twister');   % 固定随机种子，使每次运行结果一致
+
+%% ---------- 基本参数 ----------
+% 网络拓扑参数
+num_subnetworks = 10;          
+num_nodes_per_sub = 10;        
+num_hub = 1;                   
+
+total_nodes = num_subnetworks * num_nodes_per_sub + num_hub;  
+hub_node = total_nodes;        
+
+center_nodes = num_nodes_per_sub:num_nodes_per_sub:num_subnetworks*num_nodes_per_sub;  
+
+% 耦合强度参数
+
+g_cr = -0.15; 
+g_rr = 0; 
+g_hc = 0;  
+g_cc_values = [0.6,0.6,0.6,0.6,0.6,0.6,0.6,0.6,0.6,0.6];
+
+% 仿真时间
+t_sim = 2000;           
+transient = 500;   
+delta = 0.1;        % 忆阻器更新步长
+
+% 绘图显示节点数
+plot_nodes_num = 101;
+
+axis_num_fontsize = 28; 
+label_fontsize = 36;      
+
+% 坐标轴线宽
+axis_linewidth = 1.2;
+
+
+fig_square_size = 820;     
+fig_rect_width  = 800;      
+fig_rect_height = 700;      
+
+%% ---------- 差异化参数定义 ----------
+alpha = 2.3 * ones(total_nodes, 1);
+b = zeros(total_nodes, 1);
+
+% 子网络节点差异化
+b(1:num_subnetworks*num_nodes_per_sub) = ...
+    0.01125 + (rand(num_subnetworks*num_nodes_per_sub, 1) - 0.5) * 0.0005;  
+
+% Hub节点单独设置
+b(hub_node) = 0.0113;
+
+%% ---------- 构建连接矩阵A ----------
+A = zeros(total_nodes, total_nodes);  
+
+for sub = 1:num_subnetworks
+    start_idx = (sub-1)*num_nodes_per_sub + 1;
+    end_idx = sub*num_nodes_per_sub;
+
+    ring_nodes = start_idx:end_idx-1;  
+    center_idx = end_idx;              
+
+    % 环状节点之间耦合
+    for i = ring_nodes
+        for j = ring_nodes
+            if abs(i-j) == 1 || abs(i-j) == length(ring_nodes)-1
+                A(i,j) = g_rr;  
+            end
+        end
+    end
+
+    % 环状节点与中心节点耦合
+    for i = ring_nodes
+        A(center_idx, i) = g_cr;
+        A(i, center_idx) = g_cr;
+    end
+end
+
+% 中心节点之间耦合
+for i = 1:length(center_nodes)
+    right_idx = i + 1;
+    if right_idx > length(center_nodes)
+        right_idx = 1;
+    end
+
+    A(center_nodes(i), center_nodes(right_idx)) = g_cc_values(i);
+    A(center_nodes(right_idx), center_nodes(i)) = g_cc_values(i);
+end
+
+% Hub节点与中心节点耦合
+for i = center_nodes
+    A(i, hub_node) = g_hc;
+    A(hub_node, i) = g_hc;
+end
+
+A = A - diag(diag(A));
+
+B = tril(true(size(A)), -1);
+count = sum(A(B) ~= 0);
+
+fprintf('总非零连接数: %d\n', count);
+
+%% ---------- 仿真循环 ----------
+x = zeros(total_nodes, t_sim+1);
+y = zeros(total_nodes, t_sim+1);
+u = zeros(count, t_sim+1);
+
+% 初始值
+x(:, 1) = -2;
+y(:, 1) = -2.1;
+u(:, 1) = 2;
+
+% 构建索引映射
+WW = zeros(total_nodes, total_nodes);
+count2 = 0;
+
+for i = 1:total_nodes
+    for j = i+1:total_nodes
+        if A(i,j) ~= 0
+            count2 = count2 + 1;
+            WW(i,j) = count2;
+        end
+    end
+end
+
+for n = 1:t_sim
+
+    % 更新忆阻器磁通量 u
+    for i = 1:total_nodes
+        for j = i+1:total_nodes
+            if A(i,j) ~= 0
+                idx = WW(i,j);
+                u(idx, n+1) = u(idx, n) + delta * (x(j, n) - x(i, n));
+            end
+        end
+    end
+
+    % 更新神经元状态 x, y
+    for i = 1:total_nodes
+        coupling = 0;
+        deg = 0;
+
+        for j = 1:total_nodes
+            if A(i,j) ~= 0
+
+                if i < j
+                    phi = u(WW(i,j), n);
+                else
+                    phi = u(WW(j,i), n);
+                end
+
+                W = 1 / (1 + exp(-phi));    
+
+                coupling = coupling + A(i,j) * W * (x(j, n) - x(i, n));
+                deg = deg + 1;
+            end
+        end
+
+        if deg > 0
+            coupling = coupling / deg;
+        end
+
+        x(i, n+1) = alpha(i) / (1 + x(i, n)^2) + y(i, n) + coupling;
+        y(i, n+1) = y(i, n) - b(i) * (x(i, n) + 1);  
+    end
+end
+
+%% ---------- 范围计算 ----------
+x_steady = x(:, transient+1:t_sim+1);
+x_min = min(x_steady(:));
+x_max = max(x_steady(:));
+
+color_axis_range = [x_min, x_max];
+
+margin = 0.2 * (x_max - x_min);
+snapshot_y_range = [x_min - margin, x_max + margin];
+
+%% ---------- 统一节点刻度 ----------
+custom_ticks = 1:10:plot_nodes_num;
+
+if custom_ticks(end) ~= plot_nodes_num
+    custom_ticks = [custom_ticks, plot_nodes_num];
+end
+
+%% ---------- 绘图 1：时空图 ----------
+figure(1); clf;
+set(gcf, 'Units', 'pixels', ...
+         'Position', [100 100 fig_square_size fig_square_size]);
+
+imagesc(1:plot_nodes_num, ...
+        transient:t_sim, ...
+        x(1:plot_nodes_num, transient+1:t_sim+1)');
+
+set(gca, 'YDir', 'normal');  
+
+cb1 = colorbar;
+clim(color_axis_range);
+colormap(jet);
+
+xlabel('nodes', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+ylabel('t', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+xlim([1, plot_nodes_num]);
+ylim([transient, t_sim]);
+
+set(gca, 'XTick', custom_ticks);
+
+set(gca, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold', ...
+    'LineWidth', axis_linewidth);
+
+pbaspect(gca, [1 1 1]);
+
+xtickangle(0);
+ytickangle(0);
+set(gca, 'XTickLabelRotation', 0, 'YTickLabelRotation', 0);
+
+set(cb1, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold');
+
+drawnow;
+xtickangle(0);
+ytickangle(0);
+
+set(gcf, 'PaperPositionMode', 'auto');
+
+% --- 保存图fig8a(1) ---
+saveas(gcf, 'fig8a_1.png');
+saveas(gcf, 'fig8a_1.fig');
+
+%% ---------- 绘图 2：快照图 ----------
+figure(2); clf;
+set(gcf, 'Units', 'pixels', ...
+         'Position', [120 120 fig_rect_width fig_rect_height]);
+
+plot(1:plot_nodes_num, ...
+     x(1:plot_nodes_num, t_sim+1), ...
+     'k.', ...
+     'MarkerSize', 20);
+
+xlim([1, plot_nodes_num]);
+ylim(snapshot_y_range);
+
+xlabel('nodes', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+ylabel('x', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+set(gca, 'XTick', custom_ticks);
+
+set(gca, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold', ...
+    'LineWidth', axis_linewidth);
+
+axis normal;
+
+xtickangle(0);
+ytickangle(0);
+set(gca, 'XTickLabelRotation', 0, 'YTickLabelRotation', 0);
+
+drawnow;
+xtickangle(0);
+ytickangle(0);
+
+set(gcf, 'PaperPositionMode', 'auto');
+
+% --- 保存图fig8b(1) ---
+saveas(gcf, 'fig8b_1.png');
+saveas(gcf, 'fig8b_1.fig');
+
+
+%% ---------- 绘图 3：递归图 ----------
+figure(3); clf;
+set(gcf, 'Units', 'pixels', ...
+         'Position', [140 140 fig_square_size fig_square_size]);
+
+RP = abs(x(1:plot_nodes_num, t_sim+1) - x(1:plot_nodes_num, t_sim+1)');
+
+imagesc(1:plot_nodes_num, 1:plot_nodes_num, RP); 
+set(gca, 'YDir', 'normal');  
+
+cb3 = colorbar;
+colormap(jet);
+
+xlabel('nodes', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+ylabel('nodes', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+xlim([1, plot_nodes_num]);
+ylim([1, plot_nodes_num]);
+
+set(gca, 'XTick', custom_ticks);
+set(gca, 'YTick', custom_ticks);
+
+set(gca, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold', ...
+    'LineWidth', axis_linewidth);
+
+% 保持递归图为正方形
+axis image;
+set(gca, 'YDir', 'normal');
+
+% 刻度数字水平显示
+xtickangle(0);
+ytickangle(0);
+set(gca, 'XTickLabelRotation', 0, 'YTickLabelRotation', 0);
+
+set(cb3, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold');
+
+drawnow;
+xtickangle(0);
+ytickangle(0);
+
+set(gcf, 'PaperPositionMode', 'auto');
+
+% --- 保存图fig8c(1) ---
+saveas(gcf, 'fig8c_1.png');
+saveas(gcf, 'fig8c_1.fig');
+
+%% =====================================
+% Kuramoto 同步序参数
+data_phase = x(:,1000:t_sim+1);
+
+N = total_nodes;
+
+phase = zeros(N,size(data_phase,2));
+
+for i = 1:N
+
+    signal = data_phase(i,:);
+
+    analytic_signal = hilbert(signal);
+
+    phase(i,:) = angle(analytic_signal);
+
+end
+
+% 同步矩阵
+sync_matrix=zeros(N,N);
+
+for i=1:N
+
+    for j=1:N
+
+        delta_phase = phase(i,:)-phase(j,:);
+
+        sync_matrix(i,j)=...
+            abs(mean(exp(1i*delta_phase)));
+
+    end
+
+end
+
+
+%% ---------- 绘图 4：节点对同步热图 ----------
+figure(5); clf;
+
+set(gcf, ...
+    'Units', 'pixels', ...
+    'Position', [140 140 fig_square_size fig_square_size]);
+
+imagesc(1:N, 1:N, sync_matrix);
+axis image;
+set(gca, 'YDir', 'normal');
+colormap(jet);
+clim([0 1]);
+cb4 = colorbar;
+
+% ---------- 坐标轴标签 ----------
+xlabel('nodes', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+ylabel('nodes', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+% ---------- 坐标轴格式 ----------
+set(gca, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold', ...
+    'LineWidth', axis_linewidth);
+
+% ---------- 节点刻度 ----------
+ticks = 1:10:N;
+
+set(gca, ...
+    'XTick', ticks, ...
+    'YTick', ticks);
+
+% ---------- 刻度数字水平显示 ----------
+xtickangle(0);
+ytickangle(0);
+
+set(gca, ...
+    'XTickLabelRotation', 0, ...
+    'YTickLabelRotation', 0);
+
+% ---------- Colorbar格式 ----------
+set(cb4, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold');
+
+% ---------- 保持图形比例 ----------
+pbaspect(gca, [1 1 1]);
+
+drawnow;
+
+% 再次确保刻度水平
+xtickangle(0);
+ytickangle(0);
+
+set(gcf, 'PaperPositionMode', 'auto');
+
+% --- 保存图 fig8d(1) ---
+saveas(gcf, 'fig8d_1.png');
+saveas(gcf, 'fig8d_1.fig');
+
+
+
+%% ============================================================
+% 环状节点21、25、28与中心节点30四节点时序图
+% ============================================================
+
+figure(7);
+clf;
+
+set(gcf, ...
+    'Units', 'pixels', ...
+    'Position', [180 100 1000 650]);
+
+time = transient:t_sim;
+
+plot(time, x(21, transient+1:t_sim+1), ...
+    'Color', [1.0, 0.114, 0.145], ...
+    'LineWidth', 3.0);
+hold on;
+
+plot(time, x(25, transient+1:t_sim+1), ...
+    'Color', [0.4660 0.6740 0.1880], ...
+    'LineWidth', 2);
+
+plot(time, x(28, transient+1:t_sim+1), ...
+    'Color', [0.0, 0.443, 0.737], ...
+    'LineWidth', 1.2);
+
+plot(time, x(30, transient+1:t_sim+1), ...
+    'Color', [1.0, 0.761, 0.055], ...
+    'LineWidth', 2);
+
+
+% ---------- 坐标轴标签 ----------
+xlabel('t', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+ylabel('x', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+
+% ---------- 图例 ----------
+legend('ring node 21', ...
+       'ring node 25', ...
+       'ring node 28', ...
+       'center node 30', ...
+       'FontSize', 20, ...
+       'FontName', 'Times New Roman', ...
+       'Location', 'best');
+
+
+% ---------- 坐标轴格式 ----------
+set(gca, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold', ...
+    'LineWidth', axis_linewidth);
+
+xlim([transient t_sim]);
+
+box on;
+
+
+% ---------- 保存 ----------
+set(gcf, 'PaperPositionMode', 'auto');
+saveas(gcf,'fig8e_1.png');
+saveas(gcf, 'fig8e_1.fig');
+
+%% ============================================================
+% 环状节点25、中心节点30、环状节点66、中心节点70
+
+
+figure(8);
+clf;
+
+set(gcf, ...
+    'Units', 'pixels', ...
+    'Position', [180 100 1000 650]);
+
+time = transient:t_sim;
+
+plot(time, x(25, transient+1:t_sim+1), ...
+    'Color', [0.9290 0.6940 0.1250], ...
+    'LineWidth', 1.5);
+hold on;
+
+plot(time, x(30, transient+1:t_sim+1), ...
+    'Color', [0 0.4470 0.7410], ...
+    'LineWidth', 3.5);
+
+plot(time, x(66, transient+1:t_sim+1), ...
+    'Color', [0.4660 0.6740 0.1880], ...
+    'LineWidth', 1.5);
+
+plot(time, x(70, transient+1:t_sim+1), ...
+    'Color', [0.8500 0 0], ...
+    'LineWidth', 1.5);
+
+
+xlabel('t', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+ylabel('x', ...
+    'FontSize', label_fontsize, ...
+    'FontWeight', 'bold', ...
+    'FontName', 'Times New Roman');
+
+
+legend('ring node 25', ...
+       'center node 30', ...
+       'ring node 66', ...
+       'center node 70', ...
+       'FontSize', 20, ...
+       'FontName', 'Times New Roman', ...
+       'Location', 'best');
+
+
+set(gca, ...
+    'FontSize', axis_num_fontsize, ...
+    'FontName', 'Times New Roman', ...
+    'FontWeight', 'bold', ...
+    'LineWidth', axis_linewidth);
+
+xlim([transient t_sim]);
+
+box on;
+
+
+set(gcf, 'PaperPositionMode', 'auto');
+
+saveas(gcf, 'fig8f_1.png');
+
+saveas(gcf, 'fig8f_1.fig');
